@@ -32,8 +32,15 @@ class R3Light {
 	virtual void SetActive(RNBoolean active);
   	virtual void SetIntensity(RNScalar intensity);
   	virtual void SetColor(const RNRgb& color);
+        virtual void Transform(const R3Transformation& transformation);
 
-	// Reflection evaluation functions
+	// Geometry evaluation functions
+	virtual RNRgb IrradianceAtPoint(const R3Point& point) const;
+	virtual RNScalar IntensityAtPoint(const R3Point& point) const = 0;
+	virtual RNScalar RadiusOfInfluence(RNScalar intensity) const = 0;
+	virtual R3Sphere SphereOfInfluence(RNScalar intensity) const = 0;
+
+        // Reflection evaluation functions
 	virtual RNRgb Reflection(const R3Brdf& brdf, const R3Point& eye, 
 	    const R3Point& point, const R3Vector& normal) const = 0;
 	virtual RNRgb DiffuseReflection(const R3Brdf& brdf, 

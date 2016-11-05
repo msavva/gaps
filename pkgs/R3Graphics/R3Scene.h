@@ -63,6 +63,7 @@ public:
   void RemoveHierarchy(void);
   void RemoveTransformations(void);
   void SubdivideTriangles(RNLength max_edge_length);
+  void CreateDirectionalLights(void);
 
   // Query functions
   RNLength Distance(const R3Point& point) const;
@@ -85,6 +86,7 @@ public:
   int ReadSupportHierarchyFile(const char *filename);
   int ReadGrammarHierarchyFile(const char *filename);
   int ReadRectangleFile(const char *filename);
+  int ReadLightsFile(const char *filename);
   int WriteFile(const char *filename) const;
   int WriteObjFile(const char *filename) const;
   int WritePrincetonFile(const char *filename) const;
@@ -95,6 +97,9 @@ public:
   // Draw functions
   void Draw(const R3DrawFlags draw_flags = R3_DEFAULT_DRAW_FLAGS,
     RNBoolean set_camera = TRUE, RNBoolean set_lights = TRUE) const;
+
+  // Lighting functions
+  int LoadLights(int min_index = 0, int max_index = 7) const;
 
 private:
   R3SceneNode *root;

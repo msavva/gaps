@@ -447,6 +447,26 @@ SubdivideTriangles(RNLength max_edge_length)
 
 
 
+void R3Scene::
+CreateDirectionalLights(void)
+{
+  // Create directional light pointing diagonally down
+  RNRgb color1(1,1,1);
+  R3Vector direction1(-3,-4,-5);
+  direction1.Normalize();
+  R3DirectionalLight *light1 = new R3DirectionalLight(direction1, color1);
+  InsertLight(light1);
+
+  // Create second (weaker) directional light pointing diagonally up
+  RNRgb color2(0.5, 0.5, 0.5);
+  R3Vector direction2(3,2,3);
+  direction2.Normalize();
+  R3DirectionalLight *light2 = new R3DirectionalLight(direction2, color2);
+  InsertLight(light2);
+}
+
+
+
 RNLength R3Scene::
 Distance(const R3Point& point) const
 {
@@ -483,26 +503,47 @@ Intersects(const R3Ray& ray,
 void R3Scene::
 Draw(const R3DrawFlags draw_flags, RNBoolean set_camera, RNBoolean set_lights) const
 {
+  // Set camera
+  if (set_camera) viewer.Camera().Load(); 
+
+   // Set lights
+  if (set_lights) LoadLights();
+
   // Draw null material
   R3null_material.Draw();
-
-  // Set camera
-  if (set_camera) {
-    viewer.Camera().Load(); 
-  }
-
-  // Set lights
-  if (set_lights) {
-    for (int i = 0; i < lights.NEntries(); i++) {
-      lights.Kth(i)->Draw(i);
-    }
-  }
 
   // Draw nodes
-  root->Draw(draw_flags);
+  root->Draw(R3identity_affine, draw_flags);
 
   // Draw null material
   R3null_material.Draw();
+}
+
+
+
+
+int R3Scene::
+LoadLights(int min_index, int max_index) const
+{
+  // Set ambient light
+  static GLfloat ambient[4];
+  ambient[0] = Ambient().R();
+  ambient[1] = Ambient().G();
+  ambient[2] = Ambient().B();
+  ambient[3] = 1;
+  glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
+
+  // Draw lights 
+  int count = 0;
+  for (int i = 0; i < NLights(); i++) {
+    R3Light *light = Light(i);
+    if (min_index + count > max_index) break;
+    light->Draw(min_index + count);
+    count++;
+  }
+
+  // Return number of lights loaded
+  return count;
 }
 
 
@@ -565,23 +606,6 @@ ReadFile(const char *filename)
     SetCamera(camera);
   }
 
-  // Provide default lights
-  if (NLights() == 0) {
-    // Create first directional light
-    RNRgb color1(1,1,1);
-    R3Vector direction1(-3,-4,-5);
-    direction1.Normalize();
-    R3DirectionalLight *light1 = new R3DirectionalLight(direction1, color1);
-    InsertLight(light1);
-
-    // Create second directional light
-    RNRgb color2(0.5, 0.5, 0.5);
-    R3Vector direction2(3,2,3);
-    direction2.Normalize();
-    R3DirectionalLight *light2 = new R3DirectionalLight(direction2, color2);
-    InsertLight(light2);
-  }
-
   // Return success
   return 1;
 }
@@ -635,7 +659,7 @@ InsertSceneElement(R3Scene *scene, R3SceneNode *node, const char *object_name, R
 {
   // Create material if none
   if (!material) {
-    R3Brdf *brdf = new R3Brdf("Default");
+    R3Brdf *brdf = new R3Brdf(R3default_brdf, "Default");
     scene->InsertBrdf(brdf);
     material = new R3Material(brdf, "Default");
     scene->InsertMaterial(material);
@@ -1415,9 +1439,23 @@ ReadMesh(const char *filename)
   for (int i = 0; i < mesh.NVertices(); i++) {
     R3MeshVertex *mesh_vertex = mesh.Vertex(i);
     const R3Point& position = mesh.VertexPosition(mesh_vertex);
-    const R3Vector& normal = mesh.VertexNormal(mesh_vertex);
-    R3TriangleVertex *triangle_vertex = new R3TriangleVertex(position, normal);
+    R3TriangleVertex *triangle_vertex = new R3TriangleVertex(position);
     vertices.Insert(triangle_vertex);
+
+    // Check if should assign vertex normal
+    RNBoolean smooth = TRUE;
+    const RNAngle max_smooth_angle = RN_PI/5.0;
+    for (int j = 0; j < mesh.VertexValence(mesh_vertex); j++) {
+      R3MeshEdge *mesh_edge = mesh.EdgeOnVertex(mesh_vertex, j);
+      RNAngle angle = mesh.EdgeInteriorAngle(mesh_edge);
+      if (fabs(angle - RN_PI) > max_smooth_angle) { smooth = FALSE; break; }
+    }
+
+    // Assign vertex normal
+    if (smooth) {
+      const R3Vector& normal = mesh.VertexNormal(mesh_vertex);
+      triangle_vertex->SetNormal(normal);
+    }
   }
 
   // Create array of triangles
@@ -3073,5 +3111,184 @@ ReadPlanner5DFile(const char *filename)
 }
 
 
+
+////////////////////////////////////////////////////////////////////////
+// LIGHT I/O FUNCTIONS
+////////////////////////////////////////////////////////////////////////
+
+static int
+FindNodesWithinCategory(R3Scene *scene, const char *category_name, RNArray<R3SceneNode *>& nodes)
+{
+  // Find nodes matching category name
+  for (int i = 0; i < scene->NNodes(); i++) {
+    R3SceneNode *node = scene->Node(i);
+    const char *node_name = node->Name();
+    if (!node_name) continue;
+    int node_name_length = strlen(node_name);
+    const char *node_category_name = NULL;
+    const char *p = node_name + node_name_length;
+    while (p-- > node_name+3) {
+      if (isalnum(*(p-2)) && (*(p-1) == '_') && isalnum(*(p))) { node_category_name = p; break; }
+    }
+    if (!node_category_name) continue;
+    if (strcmp(node_category_name, category_name)) continue;
+    nodes.Insert(node);
+  }
+
+  // Return whether found any nodes
+  return (nodes.IsEmpty()) ? 0 : 1;
+}
+      
+
+
+static R3Light *
+CopyLight(R3Light *original)
+{
+  // Return copy of light
+  R3Light *copy = NULL;
+  if (original->ClassID() == R3DirectionalLight::CLASS_ID()) copy = new R3DirectionalLight(*((R3DirectionalLight *) original));
+  else if (original->ClassID() == R3PointLight::CLASS_ID()) copy = new R3PointLight(*((R3PointLight *) original));
+  else if (original->ClassID() == R3SpotLight::CLASS_ID()) copy = new R3SpotLight(*((R3SpotLight *) original));
+  else if (original->ClassID() == R3AreaLight::CLASS_ID()) copy = new R3AreaLight(*((R3AreaLight *) original));
+  else return NULL;
+  return copy;
+}
+
+
+
+static int
+InsertCopiesOfLight(R3Scene *scene, R3Light *original, const char *crdsys)
+{
+  // Iniitalize return status
+  int status = 0;
+  
+  // Insert copies of light into sceen
+  if (!strcmp(crdsys, "world")) {
+    // Insert one copy of light 
+    R3Light *light = CopyLight(original);
+    scene->InsertLight(light);
+    status++;
+  }
+  else {
+    // Find nodes indicated by crdsys
+    RNArray<R3SceneNode *> nodes;
+    if (nodes.IsEmpty()) { R3SceneNode *node = scene->Node(crdsys); if (node) nodes.Insert(node); }
+    if (nodes.IsEmpty()) { FindNodesWithinCategory(scene, crdsys, nodes); }
+    if (nodes.IsEmpty()) return 0;
+          
+    // Insert copy of light for each node
+    for (int i = 0; i < nodes.NEntries(); i++) {
+      R3SceneNode *node = nodes.Kth(i);
+      R3Light *light = CopyLight(original);
+      R3Affine transformation_to_world = node->CumulativeTransformation();
+      light->Transform(node->CumulativeTransformation());
+      scene->InsertLight(light);
+      status++;
+    }
+  }
+
+  // Return whether inserted any lights
+  return status;
+}
+
+
+
+int R3Scene::
+ReadLightsFile(const char *filename)
+{
+  // Open file
+  FILE *fp = fopen(filename, "r");
+  if (!fp) {
+    fprintf(stderr, "Unable to open lights file %s\n", filename);
+    return 0;
+  }
+
+  // Read file
+  char buffer[4096];
+  int line_number = 0;
+  while (fgets(buffer, 4096, fp)) {
+    line_number++;
+    char cmd[1024], crdsys[1024];
+    if (sscanf(buffer, "%s", cmd) != (unsigned int) 1) continue;
+    if (cmd[0] == '#') continue;
+
+    // Check cmd
+    if (!strcmp(cmd, "directional_light")) {
+      // Parse directional light info
+      double intensity, r, g, b, dx, dy, dz;
+      if (sscanf(buffer, "%s%s%lf%lf%lf%lf%lf%lf%lf", cmd, crdsys,
+        &intensity, &r, &g, &b, &dx, &dy, &dz) != (unsigned int) 9) {
+        fprintf(stderr, "Unable to parse directional light from line %d from %s\n", line_number, filename);
+        return 0;
+      }
+
+      // Create directional light
+      RNRgb color(r, g, b);
+      R3Vector direction(dx, dy, dz);
+      R3DirectionalLight light(direction, color, intensity);
+      InsertCopiesOfLight(this, &light, crdsys);
+    }
+    else if (!strcmp(cmd, "point_light")) {
+      // Parse point light info
+      double intensity, r, g, b, px, py, pz, ca, la, qa;
+      if (sscanf(buffer, "%s%s%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf", cmd, crdsys,  
+        &intensity, &r, &g, &b, &px, &py, &pz, &ca, &la, &qa) != (unsigned int) 12) {
+        fprintf(stderr, "Unable to parse point light from line %d from %s\n", line_number, filename);
+        return 0;
+      }
+
+      // Create point light
+      RNRgb color(r, g, b);
+      R3Point position(px, py, pz);
+      R3PointLight light(position, color, intensity, TRUE, ca, la, qa);
+      InsertCopiesOfLight(this, &light, crdsys);
+    }
+    else if (!strcmp(cmd, "spot_light")) {
+      // Parse spot light info
+      double intensity, r, g, b, px, py, pz, dx, dy, dz, sd, sc, ca, la, qa;
+      if (sscanf(buffer, "%s%s%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf", cmd, crdsys,  
+        &intensity, &r, &g, &b, &px, &py, &pz, &dx, &dy, &dz, &sd, &sc, &ca, &la, &qa) != (unsigned int) 17) {
+        fprintf(stderr, "Unable to parse spot light from line %d from %s\n", line_number, filename);
+        return 0;
+      }
+
+      // Create spot light
+      RNRgb color(r, g, b);
+      R3Point position(px, py, pz);
+      R3Vector direction(dx, dy, dz);
+      R3SpotLight light(position, direction, color, sd, sc, intensity, TRUE, ca, la, qa);
+      InsertCopiesOfLight(this, &light, crdsys);
+    }
+    else if (!strcmp(cmd, "line_light")) {
+      // Parse spot light info
+      double intensity, r, g, b, px1, py1, pz1, px2, py2, pz2, dx, dy, dz, sd, sc, ca, la, qa;
+      if (sscanf(buffer, "%s%s%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf%lf", cmd, crdsys,  
+        &intensity, &r, &g, &b, &px1, &py1, &pz1, &px2, &py2, &pz2, &dx, &dy, &dz, &sd, &sc, &ca, &la, &qa) != (unsigned int) 20) {
+        fprintf(stderr, "Unable to parse line light from line %d from %s\n", line_number, filename);
+        return 0;
+      }
+
+      // Create spot light
+      RNRgb color(r, g, b);
+      R3Point position1(px1, py1, pz1);
+      R3Point position2(px2, py2, pz2);
+      R3Point position = 0.5 * (position1 + position2);
+      R3Vector direction(dx, dy, dz);
+      R3SpotLight light(position, direction, color, sd, sc, intensity, TRUE, ca, la, qa);
+      InsertCopiesOfLight(this, &light, crdsys);
+    }
+    else {
+      fprintf(stderr, "Unrecognized light type %s at line %d of %s\n", cmd, line_number, filename);
+      return 0;
+    }
+  }
+
+  // Close file
+  fclose(fp);
+
+  // Return success
+  return 1;
+}
+  
 
 

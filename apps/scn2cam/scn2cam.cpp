@@ -37,6 +37,7 @@ static char *output_nodes_filename = NULL;
 static int create_object_cameras = 0;
 static int create_wall_cameras = 0;
 static int create_room_cameras = 0;
+static int create_world_in_hand_cameras = 0;
 static int interpolate_camera_trajectory = 0;
 
 
@@ -58,6 +59,8 @@ static double interpolation_step = 0.1;
 
 // Camera scoring variables
 
+static int scene_scoring_method = 0;
+static int object_scoring_method = 0;
 static double min_visible_objects = 3;
 static double min_visible_fraction = 0.01;
 static double min_distance_from_obstacle = 0.1;
@@ -839,25 +842,44 @@ SceneCoverageScore(const R3Camera& camera, R3Scene *scene, R3SceneNode *parent_n
     node_pixel_counts[node_index]++;
   }
 
-  // Count nodes and pixels visible on all objects of large enough size
-  int node_count = 0;
-  int pixel_count = 0;
-  for (int i = 0; i < scene->NNodes(); i++) {
-    R3SceneNode *node = scene->Node(i);
-    if (!IsObject(node)) continue;
-    if (node_pixel_counts[i] <= min_pixel_count_per_object) continue;
-    pixel_count += node_pixel_counts[i];
-    node_count++;
-  }
+  // Compute score
+  RNScalar score = 0;
+  if (scene_scoring_method == 0) {
+    // Count nodes and pixels visible on all objects of large enough size
+    int node_count = 0;
+    int pixel_count = 0;
+    for (int i = 0; i < scene->NNodes(); i++) {
+      R3SceneNode *node = scene->Node(i);
+      if (!IsObject(node)) continue;
+      if (node_pixel_counts[i] <= min_pixel_count_per_object) continue;
+      pixel_count += node_pixel_counts[i];
+      node_count++;
+    }
   
+    // Compute score (product of #objects and #objectpixels)
+    if (node_count > min_visible_objects) {
+      score = node_count * pixel_count / (RNScalar) max_pixel_count;
+    }
+  }
+  else if (scene_scoring_method == 1) {
+    RNScalar sum = 0;
+    int node_count = 0;
+    for (int i = 0; i < scene->NNodes(); i++) {
+      R3SceneNode *node = scene->Node(i);
+      if (!IsObject(node)) continue;
+      if (node_pixel_counts[i] <= min_pixel_count_per_object) continue;
+      sum += log(node_pixel_counts[i] / min_pixel_count_per_object);
+      node_count++;
+    }
+
+    // Compute score (log of product of number of pixels visible in each object)
+    if (node_count > min_visible_objects) {
+      score = sum;
+    }
+  }
+
   // Delete pixel counts
   delete [] node_pixel_counts;
-
-  // Check node count
-  if (node_count < min_visible_objects) return 0;
-
-  // Compute score 
-  RNScalar score = node_count * pixel_count / (RNScalar) max_pixel_count;
 
   // Return score
   return score;
@@ -1380,6 +1402,78 @@ CreateRoomCameras(void)
 
 
 
+static void
+CreateWorldInHandCameras(void)
+{
+  // Start statistics
+  RNTime start_time;
+  start_time.Read();
+  int camera_count = 0;
+
+  // Get useful variables
+  R3Point centroid = scene->Centroid();
+  RNScalar radius = scene->BBox().DiagonalRadius();
+  RNScalar neardist = 0.01 * radius;
+  RNScalar fardist = 100 * radius;
+  RNScalar aspect = (RNScalar) height / (RNScalar) width;
+  RNAngle yfov = atan(aspect * tan(xfov));
+  RNLength distance = 2.5 * radius;
+
+  // Determine number of cameras
+  int ncameras = 0;
+  if (position_sampling > 0) {
+    RNArea area_of_viewpoint_sphere = 4.0 * RN_PI * distance * distance;
+    RNScalar area_per_camera = 4.0 * position_sampling * position_sampling;
+    int position_ncameras = (int) (area_of_viewpoint_sphere / area_per_camera + 0.5);
+    if (position_ncameras > ncameras) ncameras = position_ncameras;
+  }
+  if (angle_sampling > 0) {
+    RNArea area_of_viewpoint_sphere = 4.0 * RN_PI * distance * distance;
+    RNScalar arc_length = (distance * angle_sampling);
+    RNScalar area_per_camera = arc_length * arc_length;
+    int angle_ncameras = (int) (area_of_viewpoint_sphere / area_per_camera + 0.5);
+    if (angle_ncameras > ncameras) ncameras = angle_ncameras;
+  }
+  if (ncameras == 0) ncameras = 1024;
+  
+  // Create cameras at random directions from viewpoint sphere looking at centroid
+  for (int i = 0; i < ncameras; i++) {
+    // Compute view directions
+    R3Vector towards = R3RandomDirection();
+    towards.Normalize();
+    R3Vector right = towards % R3posz_vector;
+    if (RNIsZero(right.Length())) continue;
+    right.Normalize();
+    R3Vector up = right % towards;
+    if (RNIsZero(up.Length())) continue;
+    up.Normalize();
+
+    // Compute eyepoint
+    RNScalar d = distance + (2.0*RNRandomScalar()-1.0) * position_sampling;
+    R3Point viewpoint = centroid - d * towards;
+
+    // Compute name
+    char name[1024];
+    sprintf(name, "WORLDINHAND#%d", i);
+
+    // Create camera
+    R3Camera c(viewpoint, towards, up, xfov, yfov, neardist, fardist);
+    Camera *camera = new Camera(c, name);
+    cameras.Insert(camera);
+    camera_count++;
+  }
+
+  // Print statistics
+  if (print_verbose) {
+    printf("Created world in hand cameras ...\n");
+    printf("  Time = %.2f seconds\n", start_time.Elapsed());
+    printf("  # Cameras = %d\n", camera_count++);
+    fflush(stdout);
+  }
+}
+
+
+
 ////////////////////////////////////////////////////////////////////////
 // Camera interpolation functions
 ////////////////////////////////////////////////////////////////////////
@@ -1492,6 +1586,7 @@ CreateAndWriteCameras(void)
   if (create_object_cameras) CreateObjectCameras();
   if (create_wall_cameras) CreateWallCameras();
   if (create_room_cameras) CreateRoomCameras();
+  if (create_world_in_hand_cameras) CreateWorldInHandCameras();
 
   // Create trajectory from cameras
   if (interpolate_camera_trajectory) {
@@ -1619,6 +1714,8 @@ ParseArgs(int argc, char **argv)
       else if (!strcmp(*argv, "-min_distance_from_obstacle")) { argc--; argv++; min_distance_from_obstacle = atof(*argv); }
       else if (!strcmp(*argv, "-min_visible_objects")) { argc--; argv++; min_visible_objects = atoi(*argv); }
       else if (!strcmp(*argv, "-min_score")) { argc--; argv++; min_score = atof(*argv); }
+      else if (!strcmp(*argv, "-scene_scoring_method")) { argc--; argv++; scene_scoring_method = atoi(*argv); }
+      else if (!strcmp(*argv, "-object_scoring_method")) { argc--; argv++; object_scoring_method = atoi(*argv); }
       else if (!strcmp(*argv, "-position_sampling")) { argc--; argv++; position_sampling = atof(*argv); }
       else if (!strcmp(*argv, "-angle_sampling")) { argc--; argv++; angle_sampling = atof(*argv); }
       else if (!strcmp(*argv, "-interpolation_step")) { argc--; argv++; interpolation_step = atof(*argv); }
@@ -1633,6 +1730,9 @@ ParseArgs(int argc, char **argv)
       else if (!strcmp(*argv, "-create_room_cameras")) {
         create_cameras = create_room_cameras = 1;
         angle_sampling = RN_PI / 2.0;
+      }
+      else if (!strcmp(*argv, "-create_world_in_hand_cameras")) {
+        create_cameras = create_world_in_hand_cameras = 1;
       }
       else {
         fprintf(stderr, "Invalid program argument: %s", *argv);
@@ -1690,19 +1790,6 @@ int main(int argc, char **argv)
   // Return success 
   return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

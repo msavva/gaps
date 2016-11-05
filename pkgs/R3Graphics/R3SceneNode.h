@@ -38,7 +38,10 @@ public:
   R3SceneNode *Child(int k) const;
   int NElements(void) const;
   R3SceneElement *Element(int k) const;
+  int NLights(void) const;
+  R3Light *Light(int k) const;
   const R3Affine& Transformation(void) const;
+  R3Affine CumulativeTransformation(void) const;
 
   // Manipulation functions
   void InsertChild(R3SceneNode *node);
@@ -62,12 +65,17 @@ public:
     RNScalar min_t = 0.0, RNScalar max_t = RN_INFINITY) const;
 
   // Draw functions
-  void Draw(const R3DrawFlags draw_flags = R3_DEFAULT_DRAW_FLAGS) const;
+  void Draw(const R3Affine& parent_transformation = R3identity_affine, const R3DrawFlags draw_flags = R3_DEFAULT_DRAW_FLAGS) const;
 
 public:
   // Internal update functions
-  void InvalidateBBox(void);
   void UpdateBBox(void);
+  void InvalidateBBox(void);
+
+  // Internal light loading functions
+  int LoadLights(int min_index = 0, int max_index = 7) const;
+  void UpdateLights(int max_lights = 8);
+  void InvalidateLights(void);
 
 private:
   friend class R3Scene;
@@ -77,6 +85,7 @@ private:
   int parent_index;
   RNArray<R3SceneNode *> children;
   RNArray<R3SceneElement *> elements;
+  RNArray<R3Light *> lights;
   R3Affine transformation;
   R3Box bbox;
   char *name;

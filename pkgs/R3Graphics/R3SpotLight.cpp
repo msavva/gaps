@@ -102,6 +102,16 @@ SetCutOffAngle(RNAngle cutoffangle)
 
 
 
+void R3SpotLight::
+Transform(const R3Transformation& transformation)
+{
+  // Transform position and direction
+  R3PointLight::Transform(transformation);
+  direction.Transform(transformation);
+}
+
+
+
 RNScalar R3SpotLight::
 IntensityAtPoint(const R3Point& point) const
 {
@@ -120,7 +130,7 @@ void R3SpotLight::
 Draw(int i) const
 {
     // Draw light
-    GLenum index = (GLenum) (GL_LIGHT2 + i);
+    GLenum index = (GLenum) (GL_LIGHT0 + i);
     if (index > GL_LIGHT7) return;
     GLfloat buffer[4];
     buffer[0] = Intensity() * Color().R();

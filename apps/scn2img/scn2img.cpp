@@ -25,6 +25,7 @@
 
 static char *input_scene_name = NULL;
 static char *input_cameras_name = NULL;
+static char *input_lights_name = NULL;
 static char *input_categories_name = NULL;
 static char *output_image_directory = NULL;
 
@@ -44,6 +45,7 @@ static int capture_material_images = 0;
 static int capture_node_images = 0;
 static int capture_category_images = 0;
 static int capture_boundary_images = 0;
+static int capture_room_surface_images = 0;
 static int capture_room_boundary_images = 0;
 
 
@@ -53,6 +55,8 @@ static int width = 640;
 static int height = 480;
 static RNAngle xfov = 0;
 static RNRgb background(0,0,0);
+static double max_vertex_spacing = 0;
+static int headlight = 0;
 static int glut = 1;
 static int mesa = 0;
 
@@ -101,7 +105,8 @@ enum {
   BRDF_COLOR_SCHEME,
   MATERIAL_COLOR_SCHEME,
   NODE_COLOR_SCHEME,
-  CATEGORY_COLOR_SCHEME
+  CATEGORY_COLOR_SCHEME,
+  ROOM_SURFACE_COLOR_SCHEME
 };
 
 
@@ -144,9 +149,6 @@ ReadScene(char *filename)
     return NULL;
   }
 
-  // Remove transformations (makes computing rendered values easier)
-  scene->RemoveTransformations();
-  
   // Print statistics
   if (print_verbose) {
     printf("Read scene from %s ...\n", filename);
@@ -163,6 +165,34 @@ ReadScene(char *filename)
   return scene;
 }
 
+
+
+static int
+ReadLights(const char *filename)
+{
+  // Start statistics
+  RNTime start_time;
+  start_time.Read();
+
+  // Read lights file
+  if (!scene->ReadLightsFile(filename)) return 0;
+
+  // Set default vertex spacing
+  if (max_vertex_spacing == 0) max_vertex_spacing = 0.1;
+
+  // Print statistics
+  if (print_verbose) {
+    printf("Read lights from %s ...\n", filename);
+    printf("  Time = %.2f seconds\n", start_time.Elapsed());
+    printf("  # Lights = %d\n", scene->NLights());
+    printf("  Max vertex spacing = %g\n", max_vertex_spacing);
+    fflush(stdout);
+  }
+
+  // Return success
+  return 1;
+}
+  
 
 
 static int
@@ -304,8 +334,12 @@ AssignNodesToCategories(void)
         if (strncmp(node_name, "Ceilings#", 9)) continue;
       }
       else {
-        if (node_name_length < category_name_length) continue;
-        const char *node_category_name = node_name + node_name_length - category_name_length;
+        const char *node_category_name = NULL;
+        const char *p = node_name + node_name_length;
+        while (p-- > node_name+3) {
+          if (isalnum(*(p-2)) && (*(p-1) == '_') && isalnum(*(p))) { node_category_name = p; break; }
+        }
+        if (!node_category_name) continue;
         if (strcmp(node_category_name, category->name)) continue;
       }
       assignments[i] = category;
@@ -586,16 +620,24 @@ DrawNodeWithOpenGL(const R3Camera& camera, R3Scene *scene, R3SceneNode *node, in
       }
     }
   }
-  
+
   // Draw elements
   if ((color_scheme == RGB_COLOR_SCHEME) || (color_scheme == ALBEDO_COLOR_SCHEME)) {
-    // Draw colors
+    // Load lights for node
+    if (color_scheme == RGB_COLOR_SCHEME) {
+      int max_lights = 8 - headlight;
+      if (scene->NLights() > max_lights) {
+        node->LoadLights(headlight);
+      }
+    }
+
+    // Draw shaded
     for (int i = 0; i < node->NElements(); i++) {
       R3SceneElement *element = node->Element(i);
       element->Draw(R3_DEFAULT_DRAW_FLAGS);
     }
   }
-  else if ((color_scheme == NODE_COLOR_SCHEME) || (color_scheme == CATEGORY_COLOR_SCHEME)) {
+  else if ((color_scheme == NODE_COLOR_SCHEME) || (color_scheme == CATEGORY_COLOR_SCHEME) || (color_scheme == ROOM_SURFACE_COLOR_SCHEME)) {
     // Draw integer values per node
     if (color_scheme == NODE_COLOR_SCHEME) {
       LoadInteger(node->SceneIndex() + 1);
@@ -604,6 +646,13 @@ DrawNodeWithOpenGL(const R3Camera& camera, R3Scene *scene, R3SceneNode *node, in
       Category *category = (node_category_assignments) ? node_category_assignments[node->SceneIndex()] : NULL;
       int category_identifier = (category) ? category->identifier : 0;
       LoadInteger(category_identifier);
+    }
+    else if (color_scheme == ROOM_SURFACE_COLOR_SCHEME) {
+      if (!node->Name()) LoadInteger(0);
+      else if (!strncmp(node->Name(), "Walls#", 6)) LoadInteger(1);
+      else if (!strncmp(node->Name(), "Floors#", 7)) LoadInteger(2);
+      else if (!strncmp(node->Name(), "Ceilings#", 9)) LoadInteger(3);
+      else LoadInteger(0);
     }
     for (int i = 0; i < node->NElements(); i++) {
       R3SceneElement *element = node->Element(i);
@@ -710,24 +759,11 @@ DrawSceneWithOpenGL(const R3Camera& camera, R3Scene *scene, int color_scheme, RN
   glClearColor(background.R(), background.G(), background.B(), 1.0);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-  // Set up lighting
+  // Check color scheme
   if (color_scheme == RGB_COLOR_SCHEME) {
-    // Load ambient light
-    static GLfloat ambient[4];
-    ambient[0] = scene->Ambient().R();
-    ambient[1] = scene->Ambient().G();
-    ambient[2] = scene->Ambient().B();
-    ambient[3] = 1;
-    glLightModelfv(GL_LIGHT_MODEL_AMBIENT, ambient);
-
-    // Load scene lights
-    for (int i = 0; i < scene->NLights(); i++) {
-      R3Light *light = scene->Light(i);
-      light->Draw(i);
-    }
-
     // Draw scene
     glEnable(GL_LIGHTING);
+    scene->LoadLights(headlight);
     R3null_material.Draw();
     DrawNodeWithOpenGL(camera, scene, scene->Root(), color_scheme, roomfiles_only);
     R3null_material.Draw();
@@ -794,23 +830,22 @@ void Redraw(void)
   R3Camera *camera = cameras.Kth(next_image_index);
   next_image_index++;
 
-  // Initialize lighting
+  // Intialize transformations
   glMatrixMode(GL_MODELVIEW);
   glLoadIdentity();
-  static GLfloat lmodel_ambient[] = { 0.2, 0.2, 0.2, 1.0 };
-  glLightModelfv(GL_LIGHT_MODEL_AMBIENT, lmodel_ambient);
+
+  // Initialize lighting
   glLightModeli(GL_LIGHT_MODEL_LOCAL_VIEWER, GL_TRUE);
   glEnable(GL_NORMALIZE);
+  if (headlight) {
+    static GLfloat light0_diffuse[] = { 0.5, 0.5, 0.5, 1.0 };
+    static GLfloat light0_position[] = { 0.0, 0.0, 1.0, 0.0 };
+    glLightfv(GL_LIGHT0, GL_DIFFUSE, light0_diffuse);
+    glLightfv(GL_LIGHT0, GL_POSITION, light0_position);
+    glEnable(GL_LIGHT0);
+  }
 
-  // Initialize headlight
-  static GLfloat light0_diffuse[] = { 0.5, 0.5, 0.5, 1.0 };
-  static GLfloat light0_position[] = { 0.0, 0.0, 1.0, 0.0 };
-  glLightfv(GL_LIGHT0, GL_DIFFUSE, light0_diffuse);
-  glLightfv(GL_LIGHT0, GL_POSITION, light0_position);
-  glEnable(GL_LIGHT0);
-
-  // Initialize graphics modes  
-  // glEnable(GL_CULL_FACE);
+  // Initialize depth test
   glEnable(GL_DEPTH_TEST);
 
   // Load camera and viewport
@@ -942,6 +977,18 @@ void Redraw(void)
       if (CaptureInteger(image)) {
         char output_image_filename[1024];
         sprintf(output_image_filename, "%s/%s_category.png", output_image_directory, name);
+        image.WriteFile(output_image_filename);
+      }
+    }
+  }
+
+  // Capture and write room_surface image 
+  if (capture_room_surface_images) {
+    if (DrawSceneWithOpenGL(*camera, scene, ROOM_SURFACE_COLOR_SCHEME, TRUE)) {
+      R2Grid image(width, height);
+      if (CaptureInteger(image)) {
+        char output_image_filename[1024];
+        sprintf(output_image_filename, "%s/%s_room_surface.png", output_image_directory, name);
         image.WriteFile(output_image_filename);
       }
     }
@@ -1395,6 +1442,26 @@ RenderImagesWithRaycasting(const char *output_image_directory)
 
 
 
+static int
+RenderImages(const char *output_image_directory)
+{
+  // Remove transformations
+  scene->RemoveTransformations();
+  
+  // Subdivide triangles (for lighting)
+  if (max_vertex_spacing > 0) scene->SubdivideTriangles(max_vertex_spacing);
+
+  // Render images
+  if (glut) { if (!RenderImagesWithGlut(output_image_directory)) exit(-1); }
+  else if (mesa) { if (!RenderImagesWithMesa(output_image_directory)) exit(-1); }
+  else { if (!RenderImagesWithRaycasting(output_image_directory)) exit(-1); }
+
+  // Return success
+  return 1;
+}
+
+
+
 ////////////////////////////////////////////////////////////////////////
 // Program argument parsing
 ////////////////////////////////////////////////////////////////////////
@@ -1414,6 +1481,7 @@ ParseArgs(int argc, char **argv)
       else if (!strcmp(*argv, "-glut")) { mesa = 0; glut = 1; }
       else if (!strcmp(*argv, "-mesa")) { mesa = 1; glut = 0; }
       else if (!strcmp(*argv, "-raycast")) { mesa = 0; glut = 0; }
+      else if (!strcmp(*argv, "-lights")) { argc--; argv++; input_lights_name = *argv; }
       else if (!strcmp(*argv, "-capture_color_images")) { capture_images = capture_color_images = 1; }
       else if (!strcmp(*argv, "-capture_depth_images")) { capture_images = capture_depth_images = 1; }
       else if (!strcmp(*argv, "-capture_kinect_images")) { capture_images = capture_kinect_images = 1; }
@@ -1428,6 +1496,7 @@ ParseArgs(int argc, char **argv)
       else if (!strcmp(*argv, "-capture_instance_images")) { capture_images = capture_node_images = 1; }
       else if (!strcmp(*argv, "-capture_category_images")) { capture_images = capture_category_images = 1; }
       else if (!strcmp(*argv, "-capture_boundary_images")) { capture_images = capture_boundary_images = 1; }
+      else if (!strcmp(*argv, "-capture_room_surface_images")) { capture_images = capture_room_surface_images = 1; }
       else if (!strcmp(*argv, "-capture_room_boundary_images")) { capture_images = capture_room_boundary_images = 1; }
       else if (!strcmp(*argv, "-categories")) { argc--; argv++; input_categories_name = *argv; capture_category_images = 1; }
       else if (!strcmp(*argv, "-kinect_min_depth")) { argc--; argv++; kinect_min_depth = atof(*argv); }
@@ -1435,9 +1504,11 @@ ParseArgs(int argc, char **argv)
       else if (!strcmp(*argv, "-kinect_min_reflection")) { argc--; argv++; kinect_min_reflection = atof(*argv); }
       else if (!strcmp(*argv, "-kinect_noise_fraction")) { argc--; argv++; kinect_noise_fraction = atof(*argv); }
       else if (!strcmp(*argv, "-kinect_stereo_baseline")) { argc--; argv++; kinect_stereo_baseline = atof(*argv); }
+      else if (!strcmp(*argv, "-max_vertex_spacing")) { argc--; argv++; max_vertex_spacing = atof(*argv); }
       else if (!strcmp(*argv, "-width")) { argc--; argv++; width = atoi(*argv); }
       else if (!strcmp(*argv, "-height")) { argc--; argv++; height = atoi(*argv); }
       else if (!strcmp(*argv, "-xfov")) { argc--; argv++; xfov = atof(*argv); }
+      else if (!strcmp(*argv, "-headlight")) { headlight = 1; }
       else if (!strcmp(*argv, "-background")) {
         argc--; argv++; background[0] = atof(*argv);
         argc--; argv++; background[1] = atof(*argv);
@@ -1471,6 +1542,7 @@ ParseArgs(int argc, char **argv)
     capture_node_images = 1;
     capture_category_images = 1;
     capture_boundary_images = 1;
+    capture_room_surface_images = 1;
     capture_room_boundary_images = 1;
   }
 
@@ -1501,6 +1573,10 @@ int main(int argc, char **argv)
   // Read cameras 
   if (!ReadCameras(input_cameras_name)) exit(-1);
 
+  // Read/create lights
+  if (input_lights_name) { if (!ReadLights(input_lights_name)) exit(-1); }
+  else { scene->CreateDirectionalLights(); headlight = 1; }
+
   // Read and assign categories
   if (input_categories_name) {
     if (!ReadCategories(input_categories_name)) exit(-1);
@@ -1509,27 +1585,11 @@ int main(int argc, char **argv)
   }
 
   // Render images
-  if (glut) { if (!RenderImagesWithGlut(output_image_directory)) exit(-1); }
-  else if (mesa) { if (!RenderImagesWithMesa(output_image_directory)) exit(-1); }
-  else { if (!RenderImagesWithRaycasting(output_image_directory)) exit(-1); }
+  if (!RenderImages(output_image_directory)) exit(-1);
 
   // Return success 
   return 0;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

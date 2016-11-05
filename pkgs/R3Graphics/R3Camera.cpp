@@ -15,7 +15,7 @@ RNLength R3default_camera_yfov(RN_PI / 6.0);
 R3Vector R3default_camera_right_vector(1.0, 0.0, 0.0);
 R3Vector R3default_camera_towards_vector(0.0, 1.0, 0.0);
 R3Vector R3default_camera_up_vector(0.0, 0.0, 1.0);
-R3Camera R3default_camera(R3CoordSystem(R3zero_point, 
+R3Camera R3default_camera(R3CoordSystem(R3Point(0,0,0),
     R3Triad(R3default_camera_towards_vector, R3default_camera_up_vector)),
     R3default_camera_xfov, R3default_camera_yfov, 0.001, 1000.0);
 
@@ -41,7 +41,7 @@ R3StopCamera()
 
 R3Camera::
 R3Camera(void)
-    : cs(R3Point(0,0,0), R3Triad(R3Vector(0,0,0), R3Vector(0,0,0), R3Vector(0,0,0))),
+    : cs(R3Point(0,0,0), R3Triad(R3Vector(1,0,0), R3Vector(0,1,0), R3Vector(0,0,1))),
       xfov(0),
       yfov(0),
       neardist(0),
@@ -254,7 +254,7 @@ operator==(const R3Camera& camera) const
            (xfov == camera.xfov) &&
            (yfov == camera.yfov) &&
            (neardist == camera.neardist) &&
-          (fardist == camera.fardist);
+           (fardist == camera.fardist);
 }
 
 

@@ -24,15 +24,16 @@ public:
   ~RNPolynomial(void);
 
   // Property functions
+  int NVariables(void) const;
+  int NPartialDerivatives(void) const;
   RNBoolean IsZero(void) const;
+  RNBoolean IsOne(void) const;
   RNBoolean IsConstant(void) const;
   RNBoolean IsLinear(void) const;
   RNBoolean IsQuadratic(void) const;
   RNBoolean IsPolynomial(void) const;
   RNBoolean IsAlgebraic(void) const;
   RNBoolean HasVariable(int v) const;
-  int NVariables(void) const;
-  int NPartialDerivatives(void) const;
   RNScalar Degree(void) const;
 
   // Access functions
@@ -125,17 +126,17 @@ public:
 
   // Property functions
   RNBoolean IsZero(void) const;
+  RNBoolean IsOne(void) const;
   RNBoolean IsConstant(void) const;
   RNBoolean IsLinear(void) const;
   RNBoolean IsQuadratic(void) const;
   RNBoolean HasVariable(int v) const;
-  int NVariables(void) const;
-  int NPartialDerivatives(void) const;
   RNScalar Degree(void) const;
 
   // Access functions
-  RNScalar Coefficient(void) const;
+  int NVariables(void) const;
   int Variable(int k) const;
+  RNScalar Coefficient(void) const;
   RNScalar Exponent(int k) const;
   const int *Variables(void) const;
   const RNScalar *Exponents(void) const;
@@ -154,6 +155,7 @@ public:
   RNScalar Evaluate(const RNScalar *x) const;
 
   // Partial derivative functions
+  int NPartialDerivatives(void) const;
   RNScalar PartialDerivative(const RNScalar *x, int variable) const;
 
   // Print functions

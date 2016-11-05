@@ -143,3 +143,21 @@ SetColor(const RNRgb& color)
 
 
 
+void R3Light::
+Transform(const R3Transformation& transformation)
+{
+  // Transform light
+}
+
+
+
+RNRgb R3Light::
+IrradianceAtPoint(const R3Point& point) const
+{
+    // Return irradiance at point
+    if (!IsActive()) return RNblack_rgb;
+    return IntensityAtPoint(point) * color;
+}
+
+
+
